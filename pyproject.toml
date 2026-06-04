@@ -2,7 +2,9 @@
 name = "enterprise-application-forensics-toolkit"
 version = "0.1.0"
 description = "Toolkit voor installatiesanalyse, dependency scanning en Intune/MSIX-evaluatie."
-authors = ["Enterprise Forensics <noreply@example.com>"]
+authors = [
+  { name = "Enterprise Forensics", email = "noreply@example.com" }
+]
 readme = "README.md"
 requires-python = ">=3.11"
 
