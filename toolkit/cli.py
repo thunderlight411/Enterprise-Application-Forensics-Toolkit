@@ -11,8 +11,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--installer",
-        required=True,
         help="Pad naar de installer die geanalyseerd moet worden.",
+    )
+    parser.add_argument(
+        "--procmon",
+        help="Pad naar een ProcMon CSV-bestand voor trace-analyse.",
+    )
+    parser.add_argument(
+        "--procdump",
+        help="Pad naar een ProcDump .dmp-bestand voor dump-analyse.",
     )
     parser.add_argument(
         "--output",
@@ -31,8 +38,13 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    if not args.installer and not args.procmon and not args.procdump:
+        parser.error("Provide at least one of --installer, --procmon, or --procdump")
+
     toolkit = ForensicsToolkit(
-        installer_path=Path(args.installer),
+        installer_path=Path(args.installer) if args.installer else None,
+        procmon_path=Path(args.procmon) if args.procmon else None,
+        procdump_path=Path(args.procdump) if args.procdump else None,
         verbose=args.verbose,
     )
 

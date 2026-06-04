@@ -22,7 +22,9 @@ Eén tool waarmee een packager binnen 5 minuten ziet:
 ## Starten
 
 ```powershell
-python -m toolkit analyze --installer "C:\path\to\installer.exe" --output report.json
+python -m toolkit --installer "C:\path\to\installer.exe" --output report.json
+python -m toolkit --procmon "C:\path\to\trace.csv" --output report.json
+python -m toolkit --procdump "C:\path\to\memory.dmp" --output report.json
 ```
 
 ## Structuur
