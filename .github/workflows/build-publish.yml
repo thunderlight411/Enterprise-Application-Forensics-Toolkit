@@ -32,16 +32,16 @@ jobs:
       - name: Set dynamic version
         run: |
           python - <<'PY'
-import os
-from pathlib import Path
-import tomllib
-import tomli_w
+            import os
+            from pathlib import Path
+            import tomllib
+            import tomli_w
 
-pyproject = Path('pyproject.toml')
-config = tomllib.loads(pyproject.read_text())
-config['project']['version'] = os.environ['VERSION']
-pyproject.write_text(tomli_w.dumps(config))
-PY
+            pyproject = Path('pyproject.toml')
+            config = tomllib.loads(pyproject.read_text())
+            config['project']['version'] = os.environ['VERSION']
+            pyproject.write_text(tomli_w.dumps(config))
+          PY
 
       - name: Build distribution artifacts
         run: |
