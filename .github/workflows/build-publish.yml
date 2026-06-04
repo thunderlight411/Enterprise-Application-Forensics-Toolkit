@@ -89,7 +89,6 @@ jobs:
     needs: [build, build-windows-exe]
     env:
       VERSION: 0.0.${{ github.run_number }}
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: Download Python distribution artifacts
@@ -107,9 +106,9 @@ jobs:
       - name: Create GitHub release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          body: "Automated package build for tag ${{ github.ref_name }}"
+          tag_name: build-${{ env.VERSION }}
+          name: CI Build ${{ env.VERSION }}
+          body: "Automated CI build release for version ${{ env.VERSION }}"
           files: |
             dist/*.tar.gz
             dist/*.whl
