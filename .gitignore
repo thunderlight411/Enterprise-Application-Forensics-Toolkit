@@ -1,9 +1,20 @@
+# Python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.egg-info/
+.pytest_cache/
 dist/
+
+# C++/CMake build artifacts
+cpp/build/
 build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Logs and local reports
 *.log
 report.json

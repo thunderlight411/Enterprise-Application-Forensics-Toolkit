@@ -33,6 +33,17 @@ python -m toolkit --procdump "C:\path\to\memory.dmp" --output report.json
 - `toolkit/analysis.py` - analyse- en evaluatiemodules
 - `toolkit/__main__.py` - package entrypoint
 
+
+## C++-onderzoek en proof-of-concept
+
+Deze repository bevat naast de Python-toolkit nu ook een onderzoek naar een C++-herimplementatie in `docs/cpp-port-investigation.md`. Een parallelle C++ proof-of-concept staat in `cpp/` en behoudt de bestaande commandline-opties en JSON-rapportstructuur voor de huidige functionaliteiten.
+
+```bash
+cmake -S cpp -B cpp/build
+cmake --build cpp/build
+./cpp/build/eaftoolkit --procmon trace.csv --procdump memory.dmp --output report.json
+```
+
 ## Volgende stappen
 
 - implementeren van live ProcMon-log parsing of capture
