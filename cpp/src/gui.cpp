@@ -307,25 +307,14 @@ static void render_ui(AppState& s) {
                 s.reg_snap_result = compare_registry_snapshots(
                     s.before_snap.registry, result.registry, "HKLM");
                 s.has_snap_result = true;
+                s.report.changes["Bestandswijzigingen"] = s.snap_result;
+                s.report.changes["Registerwijzigingen"] = s.reg_snap_result;
+                if (s.status == AppState::Status::Idle ||
+                    s.status == AppState::Status::Error)
+                    s.status = AppState::Status::Done;
             }
             s.snap_phase = AppState::SnapPhase::None;
         }
-    }
-
-    // Show snapshot results inline
-    if (s.has_snap_result) {
-        ImGui::Spacing();
-        auto show_result = [](const ChangeSummary& cs) {
-            const std::string lbl = cs.description + "##snap";
-            if (ImGui::TreeNodeEx(lbl.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
-                for (const auto& item : cs.items)
-                    ImGui::BulletText("%s", item.c_str());
-                ImGui::TreePop();
-            }
-        };
-        show_result(s.snap_result);
-        ImGui::Spacing();
-        show_result(s.reg_snap_result);
     }
 
     ImGui::Spacing();
@@ -367,6 +356,10 @@ static void render_ui(AppState& s) {
         if (s.pending.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
             try {
                 s.report = s.pending.get();
+                if (s.has_snap_result) {
+                    s.report.changes["Bestandswijzigingen"] = s.snap_result;
+                    s.report.changes["Registerwijzigingen"] = s.reg_snap_result;
+                }
                 s.status = AppState::Status::Done;
             } catch (const std::exception& ex) {
                 s.error_message = ex.what();
