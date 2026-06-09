@@ -117,8 +117,7 @@ struct AppState {
     char installer_path[512]  = "";
     char procmon_path[512]    = "";
     char procdump_path[512]   = "";
-    char fs_before_path[512]  = "";
-    char fs_after_path[512]   = "";
+    char snapshot_dir[512]    = "";
     char output_path[512]     = "report.json";
 
     enum class Status { Idle, Running, Done, Error };
@@ -127,6 +126,18 @@ struct AppState {
 
     std::future<AnalysisReport> pending;
     AnalysisReport report;
+
+    // Filesystem + registry snapshot state
+    enum class SnapPhase { None, TakingBefore, TakingAfter };
+    SnapPhase             snap_phase       = SnapPhase::None;
+    std::future<Snapshot> snap_future;
+    Snapshot              before_snap;
+    bool                  has_before       = false;
+    std::size_t           before_file_count = 0;
+    std::size_t           before_reg_count  = 0;
+    ChangeSummary         snap_result;
+    ChangeSummary         reg_snap_result;
+    bool                  has_snap_result   = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -229,10 +240,93 @@ static void render_ui(AppState& s) {
     ImGui::Spacing();
     ImGui::TextUnformatted("Bestandsvergelijking (voor/na installatie):");
     ImGui::Spacing();
-    input_row("Snapshot voor", s.fs_before_path, sizeof(s.fs_before_path),
-        nullptr, L"Selecteer map van voor installatie", BrowseMode::Folder);
-    input_row("Snapshot na",   s.fs_after_path,  sizeof(s.fs_after_path),
-        nullptr, L"Selecteer map van na installatie",  BrowseMode::Folder);
+    input_row("Doelmap", s.snapshot_dir, sizeof(s.snapshot_dir),
+        nullptr, L"Selecteer doelmap voor snapshot", BrowseMode::Folder);
+
+    ImGui::Spacing();
+    {
+        const bool snap_busy = s.snap_phase != AppState::SnapPhase::None;
+        const bool has_dir   = s.snapshot_dir[0] != '\0';
+
+        ImGui::BeginDisabled(snap_busy || !has_dir);
+        if (ImGui::Button("Neem voor-snapshot", ImVec2(170, 26))) {
+            s.has_before      = false;
+            s.has_snap_result = false;
+            s.snap_phase      = AppState::SnapPhase::TakingBefore;
+            const fs::path dir(utf8_to_wstr(s.snapshot_dir));
+            s.snap_future = std::async(std::launch::async,
+                [dir]() { return take_full_snapshot(dir); });
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (!s.has_before)
+            ImGui::TextColored({0.6f, 0.6f, 0.6f, 1.0f},
+                snap_busy && s.snap_phase == AppState::SnapPhase::TakingBefore
+                    ? "Bezig met scannen..." : "Nog niet genomen");
+        else
+            ImGui::TextColored({0.2f, 1.0f, 0.4f, 1.0f},
+                "Klaar  (%zu bestanden, %zu registerwaarden)",
+                s.before_file_count, s.before_reg_count);
+    }
+
+    ImGui::Spacing();
+    {
+        const bool snap_busy = s.snap_phase != AppState::SnapPhase::None;
+
+        ImGui::BeginDisabled(snap_busy || !s.has_before);
+        if (ImGui::Button("Neem na-snapshot + vergelijk", ImVec2(220, 26))) {
+            s.snap_phase = AppState::SnapPhase::TakingAfter;
+            const fs::path dir(utf8_to_wstr(s.snapshot_dir));
+            s.snap_future = std::async(std::launch::async,
+                [dir]() { return take_full_snapshot(dir); });
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (snap_busy && s.snap_phase == AppState::SnapPhase::TakingAfter)
+            ImGui::TextColored({1.0f, 0.8f, 0.0f, 1.0f}, "Bezig met scannen...");
+        else if (s.has_snap_result)
+            ImGui::TextColored({0.2f, 1.0f, 0.4f, 1.0f}, "Vergelijking klaar");
+    }
+
+    // Poll snapshot future
+    if (s.snap_phase != AppState::SnapPhase::None && s.snap_future.valid()) {
+        if (s.snap_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+            Snapshot result = s.snap_future.get();
+            if (s.snap_phase == AppState::SnapPhase::TakingBefore) {
+                s.before_snap      = std::move(result);
+                s.before_file_count = s.before_snap.files.size();
+                s.before_reg_count  = s.before_snap.registry.size();
+                s.has_before        = true;
+            } else {
+                const std::string label =
+                    fs::path(utf8_to_wstr(s.snapshot_dir)).filename().string();
+                s.snap_result     = compare_filesystem_snapshots(
+                    s.before_snap.files, result.files, label);
+                s.reg_snap_result = compare_registry_snapshots(
+                    s.before_snap.registry, result.registry, "HKLM");
+                s.has_snap_result = true;
+            }
+            s.snap_phase = AppState::SnapPhase::None;
+        }
+    }
+
+    // Show snapshot results inline
+    if (s.has_snap_result) {
+        ImGui::Spacing();
+        auto show_result = [](const ChangeSummary& cs) {
+            const std::string lbl = cs.description + "##snap";
+            if (ImGui::TreeNodeEx(lbl.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+                for (const auto& item : cs.items)
+                    ImGui::BulletText("%s", item.c_str());
+                ImGui::TreePop();
+            }
+        };
+        show_result(s.snap_result);
+        ImGui::Spacing();
+        show_result(s.reg_snap_result);
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -246,8 +340,7 @@ static void render_ui(AppState& s) {
     ImGui::Spacing();
 
     // Run button
-    const bool has_input = s.installer_path[0] || s.procmon_path[0] || s.procdump_path[0]
-                        || (s.fs_before_path[0] && s.fs_after_path[0]);
+    const bool has_input = s.installer_path[0] || s.procmon_path[0] || s.procdump_path[0];
     ImGui::BeginDisabled(s.status == AppState::Status::Running || !has_input);
     if (ImGui::Button("Analyse uitvoeren", ImVec2(170, 30))) {
         s.status = AppState::Status::Running;
@@ -257,8 +350,6 @@ static void render_ui(AppState& s) {
         if (s.installer_path[0])  opts.installer = fs::path(utf8_to_wstr(s.installer_path));
         if (s.procmon_path[0])    opts.procmon   = fs::path(utf8_to_wstr(s.procmon_path));
         if (s.procdump_path[0])   opts.procdump  = fs::path(utf8_to_wstr(s.procdump_path));
-        if (s.fs_before_path[0])  opts.fs_before = fs::path(utf8_to_wstr(s.fs_before_path));
-        if (s.fs_after_path[0])   opts.fs_after  = fs::path(utf8_to_wstr(s.fs_after_path));
         opts.output = fs::path(utf8_to_wstr(s.output_path));
 
         s.pending = std::async(std::launch::async, [opts]() {

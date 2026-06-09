@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -16,6 +17,223 @@
 #include <vector>
 
 namespace fs = std::filesystem;
+
+using FileMap = std::map<std::string, std::pair<uintmax_t, fs::file_time_type>>;
+
+inline FileMap take_filesystem_snapshot(const fs::path& root) {
+    FileMap out;
+    std::error_code ec;
+    for (const auto& entry : fs::recursive_directory_iterator(
+            root, fs::directory_options::skip_permission_denied, ec)) {
+        if (entry.is_regular_file(ec)) {
+            const std::string rel = fs::relative(entry.path(), root, ec).string();
+            if (!rel.empty())
+                out[rel] = {entry.file_size(ec), entry.last_write_time(ec)};
+        }
+    }
+    return out;
+}
+
+inline ChangeSummary compare_filesystem_snapshots(
+        const FileMap& before, const FileMap& after, const std::string& label = "") {
+    std::vector<std::string> added, removed, modified;
+    for (const auto& [path, info] : after) {
+        auto it = before.find(path);
+        if (it == before.end())
+            added.push_back("+ " + path);
+        else if (it->second != info)
+            modified.push_back("~ " + path);
+    }
+    for (const auto& [path, info] : before) {
+        if (after.find(path) == after.end())
+            removed.push_back("- " + path);
+    }
+
+    constexpr std::size_t MAX_DISPLAY = 30;
+    std::vector<std::string> items;
+    items.push_back("Toegevoegd:  " + std::to_string(added.size()));
+    items.push_back("Gewijzigd:   " + std::to_string(modified.size()));
+    items.push_back("Verwijderd:  " + std::to_string(removed.size()));
+
+    auto append = [&](const std::vector<std::string>& list) {
+        const std::size_t limit = list.size() < MAX_DISPLAY ? list.size() : MAX_DISPLAY;
+        for (std::size_t i = 0; i < limit; ++i)
+            items.push_back(list[i]);
+        if (list.size() > MAX_DISPLAY)
+            items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
+    };
+    append(added);
+    append(modified);
+    append(removed);
+
+    return {label.empty() ? "Bestandsvergelijking" : "Bestandsvergelijking: " + label, items};
+}
+
+// ---------------------------------------------------------------------------
+// Registry snapshot (Windows only)
+// ---------------------------------------------------------------------------
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+
+using RegMap = std::map<std::string, std::string>;
+
+inline std::string reg_wcs_to_utf8(const wchar_t* wcs, int len = -1) {
+    if (!wcs || len == 0) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, wcs, len, nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string r(size, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wcs, len, r.data(), size, nullptr, nullptr);
+    if (!r.empty() && r.back() == '\0') r.pop_back();
+    return r;
+}
+
+inline std::string reg_value_repr(DWORD type, const BYTE* data, DWORD len) {
+    switch (type) {
+        case REG_SZ:
+        case REG_EXPAND_SZ:
+            return reg_wcs_to_utf8(reinterpret_cast<const wchar_t*>(data),
+                                   static_cast<int>(len / sizeof(wchar_t)));
+        case REG_DWORD: {
+            if (len < 4) return "?";
+            DWORD v = 0; std::memcpy(&v, data, 4);
+            return std::to_string(v);
+        }
+        case REG_QWORD: {
+            if (len < 8) return "?";
+            unsigned long long v = 0; std::memcpy(&v, data, 8);
+            return std::to_string(v);
+        }
+        case REG_MULTI_SZ: {
+            std::string result;
+            const wchar_t* p   = reinterpret_cast<const wchar_t*>(data);
+            const wchar_t* end = p + len / sizeof(wchar_t);
+            while (p < end && *p) {
+                if (!result.empty()) result += '|';
+                const wchar_t* q = p;
+                while (q < end && *q) ++q;
+                result += reg_wcs_to_utf8(p, static_cast<int>(q - p));
+                p = q + 1;
+            }
+            return result;
+        }
+        case REG_BINARY: {
+            std::ostringstream hex;
+            hex << std::hex << std::uppercase;
+            for (DWORD i = 0; i < len && i < 16; ++i)
+                hex << std::setw(2) << std::setfill('0') << static_cast<int>(data[i])
+                    << (i + 1 < len && i + 1 < 16 ? " " : "");
+            if (len > 16) hex << "...";
+            return hex.str();
+        }
+        default:
+            return "(type " + std::to_string(type) + ")";
+    }
+}
+
+inline void reg_enumerate_impl(HKEY hRoot, const std::wstring& key_path, RegMap& out,
+                                std::vector<wchar_t>& name_buf, std::vector<BYTE>& data_buf) {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(hRoot, key_path.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+        return;
+
+    const std::string utf8_path = "HKLM\\" + reg_wcs_to_utf8(key_path.c_str());
+
+    for (DWORD idx = 0; ; ++idx) {
+        DWORD name_len = static_cast<DWORD>(name_buf.size());
+        DWORD data_len = static_cast<DWORD>(data_buf.size());
+        DWORD type = 0;
+        LONG  ret  = RegEnumValueW(hKey, idx, name_buf.data(), &name_len,
+                                    nullptr, &type, data_buf.data(), &data_len);
+        if (ret == ERROR_NO_MORE_ITEMS) break;
+        if (ret != ERROR_SUCCESS) continue;
+        out[utf8_path + "\\" + reg_wcs_to_utf8(name_buf.data(), static_cast<int>(name_len))]
+            = reg_value_repr(type, data_buf.data(), data_len);
+    }
+
+    static constexpr DWORD KEY_BUF = 256;
+    std::vector<wchar_t> sub(KEY_BUF);
+    for (DWORD idx = 0; ; ++idx) {
+        DWORD sub_len = KEY_BUF;
+        LONG  ret = RegEnumKeyExW(hKey, idx, sub.data(), &sub_len,
+                                   nullptr, nullptr, nullptr, nullptr);
+        if (ret == ERROR_NO_MORE_ITEMS) break;
+        if (ret != ERROR_SUCCESS) continue;
+        reg_enumerate_impl(hRoot, key_path + L"\\" + sub.data(), out, name_buf, data_buf);
+    }
+
+    RegCloseKey(hKey);
+}
+
+inline RegMap take_registry_snapshot() {
+    RegMap out;
+    std::vector<wchar_t> name_buf(16384);
+    std::vector<BYTE>    data_buf(65536);
+    reg_enumerate_impl(HKEY_LOCAL_MACHINE, L"SOFTWARE", out, name_buf, data_buf);
+    reg_enumerate_impl(HKEY_LOCAL_MACHINE, L"SYSTEM",   out, name_buf, data_buf);
+    return out;
+}
+
+inline ChangeSummary compare_registry_snapshots(
+        const RegMap& before, const RegMap& after, const std::string& label = "") {
+    std::vector<std::string> added, removed, modified;
+    for (const auto& [path, val] : after) {
+        auto it = before.find(path);
+        if (it == before.end())
+            added.push_back("+ " + path);
+        else if (it->second != val)
+            modified.push_back("~ " + path);
+    }
+    for (const auto& [path, val] : before) {
+        if (after.find(path) == after.end())
+            removed.push_back("- " + path);
+    }
+
+    constexpr std::size_t MAX_DISPLAY = 30;
+    std::vector<std::string> items;
+    items.push_back("Toegevoegd:  " + std::to_string(added.size()));
+    items.push_back("Gewijzigd:   " + std::to_string(modified.size()));
+    items.push_back("Verwijderd:  " + std::to_string(removed.size()));
+
+    auto append_reg = [&](const std::vector<std::string>& list) {
+        const std::size_t limit = list.size() < MAX_DISPLAY ? list.size() : MAX_DISPLAY;
+        for (std::size_t i = 0; i < limit; ++i)
+            items.push_back(list[i]);
+        if (list.size() > MAX_DISPLAY)
+            items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
+    };
+    append_reg(added);
+    append_reg(modified);
+    append_reg(removed);
+
+    return {label.empty() ? "Registervergelijking HKLM" : "Registervergelijking: " + label, items};
+}
+
+struct Snapshot {
+    FileMap files;
+    RegMap  registry;
+};
+
+inline Snapshot take_full_snapshot(const fs::path& dir) {
+    return {take_filesystem_snapshot(dir), take_registry_snapshot()};
+}
+
+#else
+using RegMap = std::map<std::string, std::string>;
+struct Snapshot { FileMap files; RegMap registry; };
+inline Snapshot take_full_snapshot(const fs::path& dir) {
+    return {take_filesystem_snapshot(dir), {}};
+}
+inline ChangeSummary compare_registry_snapshots(
+        const RegMap&, const RegMap&, const std::string& label = "") {
+    return {label.empty() ? "Registervergelijking" : label, {"Niet beschikbaar op dit platform"}};
+}
+#endif // _WIN32
 
 struct ChangeSummary {
     std::string description;
@@ -291,63 +509,15 @@ private:
     ChangeSummary snapshot_files() const {
         const fs::path& before = *options_.fs_before;
         const fs::path& after  = *options_.fs_after;
-
         std::error_code ec;
         if (!fs::exists(before, ec))
             return {"Bestandsvergelijking", {"Voor-map niet gevonden: " + before.string()}};
         if (!fs::exists(after, ec))
             return {"Bestandsvergelijking", {"Na-map niet gevonden: " + after.string()}};
-
-        using FileInfo = std::pair<uintmax_t, fs::file_time_type>;
-        std::map<std::string, FileInfo> before_map, after_map;
-
-        auto collect = [](const fs::path& root, std::map<std::string, FileInfo>& out) {
-            std::error_code ec2;
-            for (const auto& entry : fs::recursive_directory_iterator(
-                    root, fs::directory_options::skip_permission_denied, ec2)) {
-                if (entry.is_regular_file(ec2)) {
-                    const std::string rel = fs::relative(entry.path(), root, ec2).string();
-                    if (!rel.empty())
-                        out[rel] = {entry.file_size(ec2), entry.last_write_time(ec2)};
-                }
-            }
-        };
-
-        collect(before, before_map);
-        collect(after,  after_map);
-
-        std::vector<std::string> added, removed, modified;
-        for (const auto& [path, info] : after_map) {
-            auto it = before_map.find(path);
-            if (it == before_map.end())
-                added.push_back("+ " + path);
-            else if (it->second != info)
-                modified.push_back("~ " + path);
-        }
-        for (const auto& [path, info] : before_map) {
-            if (after_map.find(path) == after_map.end())
-                removed.push_back("- " + path);
-        }
-
-        constexpr std::size_t MAX_DISPLAY = 30;
-        std::vector<std::string> items;
-        items.push_back("Toegevoegd:  " + std::to_string(added.size()));
-        items.push_back("Gewijzigd:   " + std::to_string(modified.size()));
-        items.push_back("Verwijderd:  " + std::to_string(removed.size()));
-
-        auto append = [&](const std::vector<std::string>& list) {
-            const std::size_t limit = list.size() < MAX_DISPLAY ? list.size() : MAX_DISPLAY;
-            for (std::size_t i = 0; i < limit; ++i)
-                items.push_back(list[i]);
-            if (list.size() > MAX_DISPLAY)
-                items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
-        };
-        append(added);
-        append(modified);
-        append(removed);
-
-        return {"Bestandsvergelijking: " + before.filename().string()
-                + " vs " + after.filename().string(), items};
+        return compare_filesystem_snapshots(
+            take_filesystem_snapshot(before),
+            take_filesystem_snapshot(after),
+            before.filename().string() + " vs " + after.filename().string());
     }
 
     std::vector<std::string> scan_dependencies() const {
