@@ -51,7 +51,7 @@ endif()
 # ---------------------------------------------------------------------------
 # GUI executable  (WIN32 = no console window, entry point is WinMain)
 # ---------------------------------------------------------------------------
-add_executable(eaftoolkit-gui WIN32 src/gui.cpp)
+add_executable(eaftoolkit-gui WIN32 src/gui.cpp resources/resources.rc)
 target_include_directories(eaftoolkit-gui PRIVATE src)
 target_link_libraries(eaftoolkit-gui PRIVATE imgui comdlg32)
 if(MSVC)
