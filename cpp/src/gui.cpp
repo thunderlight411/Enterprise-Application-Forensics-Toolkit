@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <shobjidl.h>
+#include "../resources/resource.h"
 #include <d3d11.h>
 #include <dxgi.h>
 
@@ -435,7 +436,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     wc.style         = CS_CLASSDC;
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInstance;
-    wc.hIcon         = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon         = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APPICON));
+    wc.hIconSm       = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_APPICON));
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"EAFToolkit";
     RegisterClassExW(&wc);

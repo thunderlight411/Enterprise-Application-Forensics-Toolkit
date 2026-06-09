@@ -54,22 +54,13 @@ inline ChangeSummary compare_filesystem_snapshots(
             removed.push_back("- " + path);
     }
 
-    constexpr std::size_t MAX_DISPLAY = 30;
     std::vector<std::string> items;
     items.push_back("Toegevoegd:  " + std::to_string(added.size()));
     items.push_back("Gewijzigd:   " + std::to_string(modified.size()));
     items.push_back("Verwijderd:  " + std::to_string(removed.size()));
-
-    auto append = [&](const std::vector<std::string>& list) {
-        const std::size_t limit = list.size() < MAX_DISPLAY ? list.size() : MAX_DISPLAY;
-        for (std::size_t i = 0; i < limit; ++i)
-            items.push_back(list[i]);
-        if (list.size() > MAX_DISPLAY)
-            items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
-    };
-    append(added);
-    append(modified);
-    append(removed);
+    items.insert(items.end(), added.begin(), added.end());
+    items.insert(items.end(), modified.begin(), modified.end());
+    items.insert(items.end(), removed.begin(), removed.end());
 
     return {label.empty() ? "Bestandsvergelijking" : "Bestandsvergelijking: " + label, items};
 }
@@ -199,22 +190,13 @@ inline ChangeSummary compare_registry_snapshots(
             removed.push_back("- " + path);
     }
 
-    constexpr std::size_t MAX_DISPLAY = 30;
     std::vector<std::string> items;
     items.push_back("Toegevoegd:  " + std::to_string(added.size()));
     items.push_back("Gewijzigd:   " + std::to_string(modified.size()));
     items.push_back("Verwijderd:  " + std::to_string(removed.size()));
-
-    auto append_reg = [&](const std::vector<std::string>& list) {
-        const std::size_t limit = list.size() < MAX_DISPLAY ? list.size() : MAX_DISPLAY;
-        for (std::size_t i = 0; i < limit; ++i)
-            items.push_back(list[i]);
-        if (list.size() > MAX_DISPLAY)
-            items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
-    };
-    append_reg(added);
-    append_reg(modified);
-    append_reg(removed);
+    items.insert(items.end(), added.begin(), added.end());
+    items.insert(items.end(), modified.begin(), modified.end());
+    items.insert(items.end(), removed.begin(), removed.end());
 
     return {label.empty() ? "Registervergelijking HKLM" : "Registervergelijking: " + label, items};
 }

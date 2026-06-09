@@ -1,1 +1,3 @@
-IDI_ICON1 ICON "EAFT.ico"
+#include "resource.h"
+
+IDI_APPICON ICON "EAFT.ico"
