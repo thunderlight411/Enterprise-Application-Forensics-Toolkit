@@ -18,6 +18,11 @@
 
 namespace fs = std::filesystem;
 
+struct ChangeSummary {
+    std::string description;
+    std::vector<std::string> items;
+};
+
 using FileMap = std::map<std::string, std::pair<uintmax_t, fs::file_time_type>>;
 
 inline FileMap take_filesystem_snapshot(const fs::path& root) {
@@ -234,11 +239,6 @@ inline ChangeSummary compare_registry_snapshots(
     return {label.empty() ? "Registervergelijking" : label, {"Niet beschikbaar op dit platform"}};
 }
 #endif // _WIN32
-
-struct ChangeSummary {
-    std::string description;
-    std::vector<std::string> items;
-};
 
 struct AnalysisReport {
     std::string installer;
