@@ -336,7 +336,8 @@ private:
         items.push_back("Verwijderd:  " + std::to_string(removed.size()));
 
         auto append = [&](const std::vector<std::string>& list) {
-            for (std::size_t i = 0; i < std::min(list.size(), MAX_DISPLAY); ++i)
+            const std::size_t limit = list.size() < MAX_DISPLAY ? list.size() : MAX_DISPLAY;
+            for (std::size_t i = 0; i < limit; ++i)
                 items.push_back(list[i]);
             if (list.size() > MAX_DISPLAY)
                 items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
