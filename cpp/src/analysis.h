@@ -34,6 +34,8 @@ struct Options {
     std::optional<fs::path> installer;
     std::optional<fs::path> procmon;
     std::optional<fs::path> procdump;
+    std::optional<fs::path> fs_before;
+    std::optional<fs::path> fs_after;
     fs::path output = "report.json";
     bool verbose = false;
 };
@@ -175,7 +177,8 @@ public:
             report.changes["procdump"] = analyze_procdump_file(*options_.procdump);
 
         report.changes["registry"]  = snapshot_registry();
-        report.changes["files"]     = snapshot_files();
+        if (options_.fs_before && options_.fs_after)
+            report.changes["files"] = snapshot_files();
         report.dependencies         = scan_dependencies();
         report.required_rights      = evaluate_required_rights();
         report.intune_msix_recommendation = evaluate_intune_msix();
@@ -286,7 +289,64 @@ private:
     }
 
     ChangeSummary snapshot_files() const {
-        return {"Bestandssnapshot en wijzigingen", {"placeholder: vergelijk file system snapshots"}};
+        const fs::path& before = *options_.fs_before;
+        const fs::path& after  = *options_.fs_after;
+
+        std::error_code ec;
+        if (!fs::exists(before, ec))
+            return {"Bestandsvergelijking", {"Voor-map niet gevonden: " + before.string()}};
+        if (!fs::exists(after, ec))
+            return {"Bestandsvergelijking", {"Na-map niet gevonden: " + after.string()}};
+
+        using FileInfo = std::pair<uintmax_t, fs::file_time_type>;
+        std::map<std::string, FileInfo> before_map, after_map;
+
+        auto collect = [](const fs::path& root, std::map<std::string, FileInfo>& out) {
+            std::error_code ec2;
+            for (const auto& entry : fs::recursive_directory_iterator(
+                    root, fs::directory_options::skip_permission_denied, ec2)) {
+                if (entry.is_regular_file(ec2)) {
+                    const std::string rel = fs::relative(entry.path(), root, ec2).string();
+                    if (!rel.empty())
+                        out[rel] = {entry.file_size(ec2), entry.last_write_time(ec2)};
+                }
+            }
+        };
+
+        collect(before, before_map);
+        collect(after,  after_map);
+
+        std::vector<std::string> added, removed, modified;
+        for (const auto& [path, info] : after_map) {
+            auto it = before_map.find(path);
+            if (it == before_map.end())
+                added.push_back("+ " + path);
+            else if (it->second != info)
+                modified.push_back("~ " + path);
+        }
+        for (const auto& [path, info] : before_map) {
+            if (after_map.find(path) == after_map.end())
+                removed.push_back("- " + path);
+        }
+
+        constexpr std::size_t MAX_DISPLAY = 30;
+        std::vector<std::string> items;
+        items.push_back("Toegevoegd:  " + std::to_string(added.size()));
+        items.push_back("Gewijzigd:   " + std::to_string(modified.size()));
+        items.push_back("Verwijderd:  " + std::to_string(removed.size()));
+
+        auto append = [&](const std::vector<std::string>& list) {
+            for (std::size_t i = 0; i < std::min(list.size(), MAX_DISPLAY); ++i)
+                items.push_back(list[i]);
+            if (list.size() > MAX_DISPLAY)
+                items.push_back("  ... en nog " + std::to_string(list.size() - MAX_DISPLAY) + " meer");
+        };
+        append(added);
+        append(modified);
+        append(removed);
+
+        return {"Bestandsvergelijking: " + before.filename().string()
+                + " vs " + after.filename().string(), items};
     }
 
     std::vector<std::string> scan_dependencies() const {

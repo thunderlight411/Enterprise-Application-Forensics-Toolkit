@@ -2,6 +2,7 @@
 #define _UNICODE
 #include <windows.h>
 #include <commdlg.h>
+#include <shobjidl.h>
 #include <d3d11.h>
 #include <dxgi.h>
 
@@ -67,6 +68,32 @@ static bool browse_open(char* buf, int buf_size, const wchar_t* filter, const wc
     return true;
 }
 
+static bool browse_folder(char* buf, int buf_size, const wchar_t* title) {
+    IFileDialog* pfd = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&pfd))))
+        return false;
+    DWORD opts = 0;
+    pfd->GetOptions(&opts);
+    pfd->SetOptions(opts | FOS_PICKFOLDERS | FOS_PATHMUSTEXIST);
+    pfd->SetTitle(title);
+    bool ok = false;
+    if (SUCCEEDED(pfd->Show(nullptr))) {
+        IShellItem* psi = nullptr;
+        if (SUCCEEDED(pfd->GetResult(&psi))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                strncpy_s(buf, buf_size, wstr_to_utf8(path).c_str(), _TRUNCATE);
+                CoTaskMemFree(path);
+                ok = true;
+            }
+            psi->Release();
+        }
+    }
+    pfd->Release();
+    return ok;
+}
+
 static bool browse_save(char* buf, int buf_size, const wchar_t* filter, const wchar_t* title) {
     OPENFILENAMEW ofn  = {};
     wchar_t path[MAX_PATH] = {};
@@ -87,10 +114,12 @@ static bool browse_save(char* buf, int buf_size, const wchar_t* filter, const wc
 // App state
 // ---------------------------------------------------------------------------
 struct AppState {
-    char installer_path[512] = "";
-    char procmon_path[512]   = "";
-    char procdump_path[512]  = "";
-    char output_path[512]    = "report.json";
+    char installer_path[512]  = "";
+    char procmon_path[512]    = "";
+    char procdump_path[512]   = "";
+    char fs_before_path[512]  = "";
+    char fs_after_path[512]   = "";
+    char output_path[512]     = "report.json";
 
     enum class Status { Idle, Running, Done, Error };
     Status      status = Status::Idle;
@@ -162,8 +191,10 @@ static void render_ui(AppState& s) {
     const     float INPUT_W  = ImGui::GetContentRegionAvail().x - LABEL_W - BUTTON_W
                                - ImGui::GetStyle().ItemSpacing.x * 2.0f;
 
+    enum class BrowseMode { File, Save, Folder };
     auto input_row = [&](const char* label, char* buf, int buf_size,
-                         const wchar_t* filter, const wchar_t* title, bool is_save = false) {
+                         const wchar_t* filter, const wchar_t* title,
+                         BrowseMode mode = BrowseMode::File) {
         ImGui::PushItemWidth(INPUT_W);
         std::string input_id = std::string("##") + label;
         ImGui::InputText(input_id.c_str(), buf, buf_size);
@@ -171,8 +202,12 @@ static void render_ui(AppState& s) {
         ImGui::SameLine();
         std::string btn_id = std::string("Bladeren##") + label;
         if (ImGui::Button(btn_id.c_str(), ImVec2(BUTTON_W, 0))) {
-            is_save ? browse_save(buf, buf_size, filter, title)
-                    : browse_open(buf, buf_size, filter, title);
+            if (mode == BrowseMode::Folder)
+                browse_folder(buf, buf_size, title);
+            else if (mode == BrowseMode::Save)
+                browse_save(buf, buf_size, filter, title);
+            else
+                browse_open(buf, buf_size, filter, title);
         }
         ImGui::SameLine();
         ImGui::SetNextItemWidth(LABEL_W);
@@ -188,25 +223,42 @@ static void render_ui(AppState& s) {
     input_row("ProcDump",    s.procdump_path, sizeof(s.procdump_path),
         L"Dumps\0*.dmp;*.mdmp\0Alle bestanden\0*.*\0",
         L"Selecteer ProcDump bestand");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Bestandsvergelijking (voor/na installatie):");
+    ImGui::Spacing();
+    input_row("Snapshot voor", s.fs_before_path, sizeof(s.fs_before_path),
+        nullptr, L"Selecteer map van voor installatie", BrowseMode::Folder);
+    input_row("Snapshot na",   s.fs_after_path,  sizeof(s.fs_after_path),
+        nullptr, L"Selecteer map van na installatie",  BrowseMode::Folder);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
     input_row("Uitvoer JSON", s.output_path, sizeof(s.output_path),
         L"JSON\0*.json\0Alle bestanden\0*.*\0",
-        L"Sla rapport op als", /*is_save=*/true);
+        L"Sla rapport op als", BrowseMode::Save);
 
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
     // Run button
-    const bool has_input = s.installer_path[0] || s.procmon_path[0] || s.procdump_path[0];
+    const bool has_input = s.installer_path[0] || s.procmon_path[0] || s.procdump_path[0]
+                        || (s.fs_before_path[0] && s.fs_after_path[0]);
     ImGui::BeginDisabled(s.status == AppState::Status::Running || !has_input);
     if (ImGui::Button("Analyse uitvoeren", ImVec2(170, 30))) {
         s.status = AppState::Status::Running;
         s.error_message.clear();
 
         Options opts;
-        if (s.installer_path[0]) opts.installer = fs::path(utf8_to_wstr(s.installer_path));
-        if (s.procmon_path[0])   opts.procmon   = fs::path(utf8_to_wstr(s.procmon_path));
-        if (s.procdump_path[0])  opts.procdump  = fs::path(utf8_to_wstr(s.procdump_path));
+        if (s.installer_path[0])  opts.installer = fs::path(utf8_to_wstr(s.installer_path));
+        if (s.procmon_path[0])    opts.procmon   = fs::path(utf8_to_wstr(s.procmon_path));
+        if (s.procdump_path[0])   opts.procdump  = fs::path(utf8_to_wstr(s.procdump_path));
+        if (s.fs_before_path[0])  opts.fs_before = fs::path(utf8_to_wstr(s.fs_before_path));
+        if (s.fs_after_path[0])   opts.fs_after  = fs::path(utf8_to_wstr(s.fs_after_path));
         opts.output = fs::path(utf8_to_wstr(s.output_path));
 
         s.pending = std::async(std::launch::async, [opts]() {
@@ -287,6 +339,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 // Entry point
 // ---------------------------------------------------------------------------
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
     WNDCLASSEXW wc   = {};
     wc.cbSize        = sizeof(wc);
     wc.style         = CS_CLASSDC;
@@ -373,6 +427,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int) {
     CleanupDeviceD3D();
     DestroyWindow(hwnd);
     UnregisterClassW(wc.lpszClassName, hInstance);
+    CoUninitialize();
     return 0;
 }
 
