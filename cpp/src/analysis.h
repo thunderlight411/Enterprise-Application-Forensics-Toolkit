@@ -394,7 +394,6 @@ public:
         if (options_.procdump)
             report.changes["procdump"] = analyze_procdump_file(*options_.procdump);
 
-        report.changes["registry"]  = snapshot_registry();
         if (options_.fs_before && options_.fs_after)
             report.changes["files"] = snapshot_files();
         report.dependencies         = scan_dependencies();

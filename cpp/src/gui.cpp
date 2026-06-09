@@ -307,8 +307,12 @@ static void render_ui(AppState& s) {
                 s.reg_snap_result = compare_registry_snapshots(
                     s.before_snap.registry, result.registry, "HKLM");
                 s.has_snap_result = true;
-                s.report.changes["Bestandswijzigingen"] = s.snap_result;
-                s.report.changes["Registerwijzigingen"] = s.reg_snap_result;
+                s.report.changes["files"]    = s.snap_result;
+                s.report.changes["registry"] = s.reg_snap_result;
+                {
+                    std::ofstream out(fs::path(utf8_to_wstr(s.output_path)));
+                    if (out) out << to_json(s.report);
+                }
                 if (s.status == AppState::Status::Idle ||
                     s.status == AppState::Status::Error)
                     s.status = AppState::Status::Done;
@@ -343,10 +347,7 @@ static void render_ui(AppState& s) {
 
         s.pending = std::async(std::launch::async, [opts]() {
             const ForensicsToolkitCpp toolkit(opts);
-            AnalysisReport rep = toolkit.run_analysis();
-            std::ofstream out(opts.output);
-            if (out) out << to_json(rep);
-            return rep;
+            return toolkit.run_analysis();
         });
     }
     ImGui::EndDisabled();
@@ -357,8 +358,12 @@ static void render_ui(AppState& s) {
             try {
                 s.report = s.pending.get();
                 if (s.has_snap_result) {
-                    s.report.changes["Bestandswijzigingen"] = s.snap_result;
-                    s.report.changes["Registerwijzigingen"] = s.reg_snap_result;
+                    s.report.changes["files"]    = s.snap_result;
+                    s.report.changes["registry"] = s.reg_snap_result;
+                }
+                {
+                    std::ofstream out(fs::path(utf8_to_wstr(s.output_path)));
+                    if (out) out << to_json(s.report);
                 }
                 s.status = AppState::Status::Done;
             } catch (const std::exception& ex) {
