@@ -22,20 +22,27 @@ jobs:
       - name: Configure C++ project
         run: cmake -S cpp -B cpp/build -A x64
 
-      - name: Build C++ executable
+      - name: Build C++ executables
         run: cmake --build cpp/build --config Release
 
-      - name: Stage versioned C++ executable
+      - name: Stage versioned executables
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item cpp/build/Release/eaftoolkit.exe dist/eaftoolkit-${{ env.VERSION }}-windows-x64.exe
+          Copy-Item cpp/build/Release/eaftoolkit.exe     dist/eaftoolkit-${{ env.VERSION }}-windows-x64.exe
+          Copy-Item cpp/build/Release/eaftoolkit-gui.exe dist/eaftoolkit-gui-${{ env.VERSION }}-windows-x64.exe
 
-      - name: Upload C++ executable artifact
+      - name: Upload CLI executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: cpp-windows-exe
           path: dist/eaftoolkit-${{ env.VERSION }}-windows-x64.exe
+
+      - name: Upload GUI executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpp-windows-gui-exe
+          path: dist/eaftoolkit-gui-${{ env.VERSION }}-windows-x64.exe
 
   release:
     name: Publish GitHub release assets
@@ -45,10 +52,16 @@ jobs:
       VERSION: 0.0.${{ github.run_number }}
 
     steps:
-      - name: Download C++ executable artifact
+      - name: Download CLI artifact
         uses: actions/download-artifact@v4
         with:
           name: cpp-windows-exe
+          path: dist
+
+      - name: Download GUI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cpp-windows-gui-exe
           path: dist
 
       - name: Create GitHub release and upload assets
@@ -59,5 +72,6 @@ jobs:
           body: "Automated CI build release for version ${{ env.VERSION }}"
           files: |
             dist/eaftoolkit-${{ env.VERSION }}-windows-x64.exe
+            dist/eaftoolkit-gui-${{ env.VERSION }}-windows-x64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

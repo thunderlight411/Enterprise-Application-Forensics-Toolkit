@@ -21,15 +21,23 @@ Eén tool waarmee een packager binnen 5 minuten ziet:
 
 ## Starten
 
+**GUI (aanbevolen):**
 ```powershell
 cmake -S cpp -B cpp/build -A x64
 cmake --build cpp/build --config Release
+.\cpp\build\Release\eaftoolkit-gui.exe
+```
+
+**CLI:**
+```powershell
 .\cpp\build\Release\eaftoolkit.exe --procmon trace.csv --procdump memory.dmp --output report.json
 ```
 
 ## Structuur
 
-- `cpp/src/main.cpp` - analyse- en CLI-logica
+- `cpp/src/analysis.h` - analyse-engine (gedeeld door CLI en GUI)
+- `cpp/src/main.cpp` - CLI-toegangspunt
+- `cpp/src/gui.cpp` - Dear ImGui GUI (Win32 + DirectX 11)
 - `cpp/CMakeLists.txt` - build configuratie
 
 ## Volgende stappen
