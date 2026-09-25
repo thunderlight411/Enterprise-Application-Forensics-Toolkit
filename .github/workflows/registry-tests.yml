@@ -1,0 +1,28 @@
+name: Registry comparison tests
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/registry-value-comparison'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  registry-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure regression tests
+        run: cmake -S cpp/tests -B cpp/test-build -A x64
+      - name: Build regression tests
+        run: cmake --build cpp/test-build --config Release
+      - name: Run regression tests
+        run: ctest --test-dir cpp/test-build -C Release --output-on-failure
+      - name: Configure application
+        run: cmake -S cpp -B cpp/build -A x64
+      - name: Build CLI and GUI
+        run: cmake --build cpp/build --config Release

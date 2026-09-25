@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -77,7 +78,20 @@ inline ChangeSummary compare_filesystem_snapshots(
 #endif
 #include <windows.h>
 
-using RegMap = std::map<std::string, std::string>;
+// Preserve evidence independently of its (potentially abbreviated) display text.
+struct RegistryValue {
+    DWORD type = REG_NONE;
+    std::vector<BYTE> data;
+
+    bool operator==(const RegistryValue& other) const {
+        return type == other.type && data == other.data;
+    }
+    bool operator!=(const RegistryValue& other) const {
+        return !(*this == other);
+    }
+};
+
+using RegMap = std::map<std::string, RegistryValue>;
 
 inline std::string reg_wcs_to_utf8(const wchar_t* wcs, int len = -1) {
     if (!wcs || len == 0) return {};
@@ -149,7 +163,7 @@ inline void reg_enumerate_impl(HKEY hRoot, const std::wstring& key_path, RegMap&
         if (ret == ERROR_NO_MORE_ITEMS) break;
         if (ret != ERROR_SUCCESS) continue;
         out[utf8_path + "\\" + reg_wcs_to_utf8(name_buf.data(), static_cast<int>(name_len))]
-            = reg_value_repr(type, data_buf.data(), data_len);
+            = RegistryValue{type, std::vector<BYTE>(data_buf.begin(), data_buf.begin() + data_len)};
     }
 
     static constexpr DWORD KEY_BUF = 256;
