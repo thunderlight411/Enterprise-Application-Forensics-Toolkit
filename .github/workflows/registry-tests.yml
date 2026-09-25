@@ -1,10 +1,11 @@
-name: Registry comparison tests
+name: Snapshot tests
 
 on:
   push:
     branches:
       - main
       - 'fix/registry-value-comparison'
+      - 'fix/incomplete-snapshots'
   pull_request:
   workflow_dispatch:
 

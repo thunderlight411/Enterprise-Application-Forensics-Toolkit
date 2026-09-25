@@ -22,19 +22,67 @@ namespace fs = std::filesystem;
 struct ChangeSummary {
     std::string description;
     std::vector<std::string> items;
+    // Present only for snapshot comparisons; omitted for other analyses.
+    std::optional<bool> complete;
 };
 
-using FileMap = std::map<std::string, std::pair<uintmax_t, fs::file_time_type>>;
+template<class Map>
+struct SnapshotResult {
+    Map values;
+    std::vector<std::string> errors;
+    bool complete() const { return errors.empty(); }
+};
 
-inline FileMap take_filesystem_snapshot(const fs::path& root) {
-    FileMap out;
-    std::error_code ec;
-    for (const auto& entry : fs::recursive_directory_iterator(
-            root, fs::directory_options::skip_permission_denied, ec)) {
-        if (entry.is_regular_file(ec)) {
-            const std::string rel = fs::relative(entry.path(), root, ec).string();
-            if (!rel.empty())
-                out[rel] = {entry.file_size(ec), entry.last_write_time(ec)};
+inline ChangeSummary incomplete_comparison(const std::string& label,
+        const std::vector<std::string>& before, const std::vector<std::string>& after) {
+    ChangeSummary result{label + " (onvolledig)",
+        {"Vergelijking overgeslagen: onvolledige snapshot; wijzigingen zijn niet betrouwbaar vast te stellen."}, false};
+    for (const auto& error : before) result.items.push_back("Voor-snapshot: " + error);
+    for (const auto& error : after) result.items.push_back("Na-snapshot: " + error);
+    return result;
+}
+
+using FileMap = std::map<std::string, std::pair<uintmax_t, fs::file_time_type>>;
+using FileSnapshot = SnapshotResult<FileMap>;
+
+inline FileSnapshot take_filesystem_snapshot(const fs::path& root) {
+    FileSnapshot out;
+    auto record_error = [&](const fs::path& path, const char* operation, const std::error_code& ec) {
+        out.errors.push_back(path.u8string() + " [" + operation + ", code " +
+                             std::to_string(ec.value()) + "]: " + ec.message());
+    };
+    // Separate iterators let an inaccessible child fail without losing its siblings.
+    std::vector<fs::path> pending{root};
+    while (!pending.empty()) {
+        const fs::path dir = pending.back();
+        pending.pop_back();
+        std::error_code ec;
+        fs::directory_iterator it(dir, ec), end;
+        if (ec) { record_error(dir, "open directory", ec); continue; }
+        while (it != end) {
+            const auto entry = *it;
+            const auto link_status = entry.symlink_status(ec);
+            if (ec) {
+                record_error(entry.path(), "symlink status", ec);
+            } else {
+                const auto status = entry.status(ec);
+                if (ec) {
+                    record_error(entry.path(), "status", ec);
+                } else if (fs::is_directory(status)) {
+                    if (!fs::is_symlink(link_status)) pending.push_back(entry.path());
+                } else if (fs::is_regular_file(status)) {
+                    const auto size = entry.file_size(ec);
+                    if (ec) {
+                        record_error(entry.path(), "file size", ec);
+                    } else {
+                        const auto time = entry.last_write_time(ec);
+                        if (ec) record_error(entry.path(), "last write time", ec);
+                        else out.values[entry.path().lexically_relative(root).u8string()] = {size, time};
+                    }
+                }
+            }
+            it.increment(ec);
+            if (ec) { record_error(dir, "enumerate directory", ec); break; }
         }
     }
     return out;
@@ -66,6 +114,15 @@ inline ChangeSummary compare_filesystem_snapshots(
     return {label.empty() ? "Bestandsvergelijking" : "Bestandsvergelijking: " + label, items};
 }
 
+inline ChangeSummary compare_filesystem_snapshot_results(
+        const FileSnapshot& before, const FileSnapshot& after, const std::string& label = "") {
+    if (!before.complete() || !after.complete())
+        return incomplete_comparison("Bestandsvergelijking: " + label, before.errors, after.errors);
+    auto result = compare_filesystem_snapshots(before.values, after.values, label);
+    result.complete = true;
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // Registry snapshot (Windows only)
 // ---------------------------------------------------------------------------
@@ -92,6 +149,7 @@ struct RegistryValue {
 };
 
 using RegMap = std::map<std::string, RegistryValue>;
+using RegistrySnapshot = SnapshotResult<RegMap>;
 
 inline std::string reg_wcs_to_utf8(const wchar_t* wcs, int len = -1) {
     if (!wcs || len == 0) return {};
@@ -146,23 +204,49 @@ inline std::string reg_value_repr(DWORD type, const BYTE* data, DWORD len) {
     }
 }
 
-inline void reg_enumerate_impl(HKEY hRoot, const std::wstring& key_path, RegMap& out,
-                                std::vector<wchar_t>& name_buf, std::vector<BYTE>& data_buf) {
+inline void reg_enumerate_impl(HKEY hRoot, const std::wstring& key_path, RegistrySnapshot& out,
+                                std::vector<wchar_t>& name_buf, std::vector<BYTE>& data_buf,
+                                const std::string& root_label = "HKLM") {
+    const std::string utf8_path = root_label + "\\" + reg_wcs_to_utf8(key_path.c_str());
+    auto record_error = [&](const std::string& operation, LONG code) {
+        out.errors.push_back(utf8_path + " [" + operation + "]: Windows error " + std::to_string(code));
+    };
     HKEY hKey = nullptr;
-    if (RegOpenKeyExW(hRoot, key_path.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+    const LONG opened = RegOpenKeyExW(hRoot, key_path.c_str(), 0, KEY_READ, &hKey);
+    if (opened != ERROR_SUCCESS) {
+        record_error("RegOpenKeyExW", opened);
         return;
-
-    const std::string utf8_path = "HKLM\\" + reg_wcs_to_utf8(key_path.c_str());
+    }
+    struct KeyGuard {
+        HKEY key;
+        ~KeyGuard() { RegCloseKey(key); }
+    } guard{hKey};
 
     for (DWORD idx = 0; ; ++idx) {
-        DWORD name_len = static_cast<DWORD>(name_buf.size());
-        DWORD data_len = static_cast<DWORD>(data_buf.size());
+        DWORD name_len = 0, data_len = 0;
         DWORD type = 0;
-        LONG  ret  = RegEnumValueW(hKey, idx, name_buf.data(), &name_len,
-                                    nullptr, &type, data_buf.data(), &data_len);
+        LONG ret = ERROR_MORE_DATA;
+        // Retry the SAME index after growth; bound retries for continuously changing values.
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            name_len = static_cast<DWORD>(name_buf.size());
+            data_len = static_cast<DWORD>(data_buf.size());
+            ret = RegEnumValueW(hKey, idx, name_buf.data(), &name_len,
+                                nullptr, &type, data_buf.data(), &data_len);
+            if (ret != ERROR_MORE_DATA) break;
+            DWORD max_name = 0, max_data = 0;
+            const LONG queried = RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr,
+                nullptr, nullptr, nullptr, nullptr, &max_name, &max_data, nullptr, nullptr);
+            if (queried != ERROR_SUCCESS) { ret = queried; break; }
+            if (name_buf.size() <= max_name) name_buf.resize(static_cast<std::size_t>(max_name) + 1);
+            const auto required = (std::max)(max_data, data_len);
+            if (data_buf.size() < required) data_buf.resize(required);
+        }
         if (ret == ERROR_NO_MORE_ITEMS) break;
-        if (ret != ERROR_SUCCESS) continue;
-        out[utf8_path + "\\" + reg_wcs_to_utf8(name_buf.data(), static_cast<int>(name_len))]
+        if (ret != ERROR_SUCCESS) {
+            record_error("RegEnumValueW index " + std::to_string(idx), ret);
+            break;
+        }
+        out.values[utf8_path + "\\" + reg_wcs_to_utf8(name_buf.data(), static_cast<int>(name_len))]
             = RegistryValue{type, std::vector<BYTE>(data_buf.begin(), data_buf.begin() + data_len)};
     }
 
@@ -173,15 +257,16 @@ inline void reg_enumerate_impl(HKEY hRoot, const std::wstring& key_path, RegMap&
         LONG  ret = RegEnumKeyExW(hKey, idx, sub.data(), &sub_len,
                                    nullptr, nullptr, nullptr, nullptr);
         if (ret == ERROR_NO_MORE_ITEMS) break;
-        if (ret != ERROR_SUCCESS) continue;
-        reg_enumerate_impl(hRoot, key_path + L"\\" + sub.data(), out, name_buf, data_buf);
+        if (ret != ERROR_SUCCESS) {
+            record_error("RegEnumKeyExW index " + std::to_string(idx), ret);
+            break;
+        }
+        reg_enumerate_impl(hRoot, key_path + L"\\" + sub.data(), out, name_buf, data_buf, root_label);
     }
-
-    RegCloseKey(hKey);
 }
 
-inline RegMap take_registry_snapshot() {
-    RegMap out;
+inline RegistrySnapshot take_registry_snapshot() {
+    RegistrySnapshot out;
     std::vector<wchar_t> name_buf(16384);
     std::vector<BYTE>    data_buf(65536);
     reg_enumerate_impl(HKEY_LOCAL_MACHINE, L"SOFTWARE", out, name_buf, data_buf);
@@ -216,8 +301,8 @@ inline ChangeSummary compare_registry_snapshots(
 }
 
 struct Snapshot {
-    FileMap files;
-    RegMap  registry;
+    FileSnapshot files;
+    RegistrySnapshot registry;
 };
 
 inline Snapshot take_full_snapshot(const fs::path& dir) {
@@ -226,15 +311,25 @@ inline Snapshot take_full_snapshot(const fs::path& dir) {
 
 #else
 using RegMap = std::map<std::string, std::string>;
-struct Snapshot { FileMap files; RegMap registry; };
+using RegistrySnapshot = SnapshotResult<RegMap>;
+struct Snapshot { FileSnapshot files; RegistrySnapshot registry; };
 inline Snapshot take_full_snapshot(const fs::path& dir) {
-    return {take_filesystem_snapshot(dir), {}};
+    return {take_filesystem_snapshot(dir), {{}, {"Registermeting niet beschikbaar op dit platform"}}};
 }
 inline ChangeSummary compare_registry_snapshots(
         const RegMap&, const RegMap&, const std::string& label = "") {
     return {label.empty() ? "Registervergelijking" : label, {"Niet beschikbaar op dit platform"}};
 }
 #endif // _WIN32
+
+inline ChangeSummary compare_registry_snapshot_results(
+        const RegistrySnapshot& before, const RegistrySnapshot& after, const std::string& label = "") {
+    if (!before.complete() || !after.complete())
+        return incomplete_comparison("Registervergelijking: " + label, before.errors, after.errors);
+    auto result = compare_registry_snapshots(before.values, after.values, label);
+    result.complete = true;
+    return result;
+}
 
 struct AnalysisReport {
     std::string installer;
@@ -303,6 +398,8 @@ inline std::string to_json(const AnalysisReport& report) {
     for (const auto& [name, summary] : report.changes) {
         out << "    \"" << json_escape(name) << "\": {\n";
         out << "      \"description\": \"" << json_escape(summary.description) << "\",\n";
+        if (summary.complete.has_value())
+            out << "      \"complete\": " << (*summary.complete ? "true" : "false") << ",\n";
         out << "      \"items\": ";
         write_string_array(out, summary.items, 6);
         out << "\n    }";
@@ -504,12 +601,7 @@ private:
     ChangeSummary snapshot_files() const {
         const fs::path& before = *options_.fs_before;
         const fs::path& after  = *options_.fs_after;
-        std::error_code ec;
-        if (!fs::exists(before, ec))
-            return {"Bestandsvergelijking", {"Voor-map niet gevonden: " + before.string()}};
-        if (!fs::exists(after, ec))
-            return {"Bestandsvergelijking", {"Na-map niet gevonden: " + after.string()}};
-        return compare_filesystem_snapshots(
+        return compare_filesystem_snapshot_results(
             take_filesystem_snapshot(before),
             take_filesystem_snapshot(after),
             before.filename().string() + " vs " + after.filename().string());
