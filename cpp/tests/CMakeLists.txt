@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.16)
+project(eaft_registry_tests LANGUAGES CXX)
+
+if(NOT WIN32)
+    message(FATAL_ERROR "Registry comparison tests require Windows")
+endif()
+
+enable_testing()
+add_executable(registry-comparison-tests registry_comparison_tests.cpp)
+target_include_directories(registry-comparison-tests PRIVATE ../src)
+target_compile_features(registry-comparison-tests PRIVATE cxx_std_17)
+target_link_libraries(registry-comparison-tests PRIVATE advapi32)
+if(MSVC)
+    target_compile_options(registry-comparison-tests PRIVATE /W4 /utf-8)
+endif()
+add_test(NAME registry-comparison COMMAND registry-comparison-tests)
