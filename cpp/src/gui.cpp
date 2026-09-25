@@ -265,7 +265,11 @@ static void render_ui(AppState& s) {
             ImGui::TextColored({0.6f, 0.6f, 0.6f, 1.0f},
                 snap_busy && s.snap_phase == AppState::SnapPhase::TakingBefore
                     ? "Bezig met scannen..." : "Nog niet genomen");
-        else
+        else if (!s.before_snap.files.complete() || !s.before_snap.registry.complete()) {
+            ImGui::TextColored({1.0f, 0.8f, 0.0f, 1.0f}, "Voor-snapshot onvolledig");
+            for (const auto& error : s.before_snap.files.errors) ImGui::TextWrapped("%s", error.c_str());
+            for (const auto& error : s.before_snap.registry.errors) ImGui::TextWrapped("%s", error.c_str());
+        } else
             ImGui::TextColored({0.2f, 1.0f, 0.4f, 1.0f},
                 "Klaar  (%zu bestanden, %zu registerwaarden)",
                 s.before_file_count, s.before_reg_count);
@@ -287,8 +291,12 @@ static void render_ui(AppState& s) {
         ImGui::SameLine();
         if (snap_busy && s.snap_phase == AppState::SnapPhase::TakingAfter)
             ImGui::TextColored({1.0f, 0.8f, 0.0f, 1.0f}, "Bezig met scannen...");
-        else if (s.has_snap_result)
-            ImGui::TextColored({0.2f, 1.0f, 0.4f, 1.0f}, "Vergelijking klaar");
+        else if (s.has_snap_result) {
+            const bool complete = s.snap_result.complete.value_or(false) &&
+                                  s.reg_snap_result.complete.value_or(false);
+            ImGui::TextColored(complete ? ImVec4{0.2f, 1.0f, 0.4f, 1.0f} : ImVec4{1.0f, 0.8f, 0.0f, 1.0f},
+                "%s", complete ? "Vergelijking klaar" : "Onvolledig: zie waarschuwingen in resultaten");
+        }
     }
 
     // Poll snapshot future
@@ -297,15 +305,15 @@ static void render_ui(AppState& s) {
             Snapshot result = s.snap_future.get();
             if (s.snap_phase == AppState::SnapPhase::TakingBefore) {
                 s.before_snap      = std::move(result);
-                s.before_file_count = s.before_snap.files.size();
-                s.before_reg_count  = s.before_snap.registry.size();
+                s.before_file_count = s.before_snap.files.values.size();
+                s.before_reg_count  = s.before_snap.registry.values.size();
                 s.has_before        = true;
             } else {
                 const std::string label =
                     fs::path(utf8_to_wstr(s.snapshot_dir)).filename().string();
-                s.snap_result     = compare_filesystem_snapshots(
+                s.snap_result     = compare_filesystem_snapshot_results(
                     s.before_snap.files, result.files, label);
-                s.reg_snap_result = compare_registry_snapshots(
+                s.reg_snap_result = compare_registry_snapshot_results(
                     s.before_snap.registry, result.registry, "HKLM");
                 s.has_snap_result = true;
                 s.report.changes["files"]    = s.snap_result;

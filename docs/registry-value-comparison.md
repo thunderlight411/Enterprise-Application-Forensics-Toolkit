@@ -26,7 +26,7 @@ De afzonderlijke testworkflow bouwt tevens de CLI en GUI.
 ## Afbakening
 
 Dit voorstel verbetert de vergelijking van succesvol ingelezen waarden.
-De bestaande limiet van de enumeratiebuffer (64 KiB), overgeslagen leesfouten,
-ontbrekende HKCU-dekking en detectie van lege registersleutels zijn hiermee
-nog niet opgelost. Hiervoor zijn afzonderlijke wijzigingen nodig.
+Buffergroei en zichtbare leesfouten zijn inmiddels uitgewerkt in
+[Onvolledige snapshots](snapshot-completeness.md). Ontbrekende HKCU-dekking en
+detectie van lege registersleutels vragen nog afzonderlijke wijzigingen.
 Volledige byte-arrays gebruiken meer geheugen dan de eerdere ingekorte tekst.
